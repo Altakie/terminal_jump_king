@@ -1,7 +1,7 @@
 #include <bits/time.h>
 #include <bits/types/struct_timeval.h>
 #include <iso646.h>
-#include <ncurses.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,34 +57,37 @@ typedef struct {
 
 struct winsize getWindowSize();
 
+void init();
+void handle_exit();
+void handle_exit_signal(int sig);
 int load_level(char *file_name, Level *level_data);
 int print_level(Level *level_data, struct winsize ws);
-int render_pixels(Vector2 pos, char *pixels);
+int render_pixels(Vector2 pos, char *pixels, struct winsize ws);
 void move_cursor_to_pos(Vector2 pos, struct winsize ws);
 void disable_canonical_mode();
 int check_input();
-int render_sprite(Sprite *sprite, Vector2 pos);
-int init_player(Player *p, Level level_data);
+int render_sprite(char *buffer, Sprite *sprite, Vector2 pos, struct winsize ws);
+int init_player(Player *p, struct winsize ws, Level level_data);
 int load_sprite_texture(Sprite *sprite, char *filename);
 int max(int *arr, int len);
 
 int main(int argc, char **argv) {
-  // system("stty -echo");
-  // disable_canonical_mode();
-  initscr();
-  noecho();
-  cbreak();
-  curs_set(0);
+  init();
+  signal(SIGTERM, handle_exit_signal);
+  atexit(handle_exit);
   // Should use another thread for input handling
 
   // struct winsize ws = getWindowSize();
-  // struct winsize ws;
-  // if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) != 0) {
-  //   return 1;
-  // }
+  struct winsize ws;
+  if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) != 0) {
+    return 1;
+  }
 
-  // int wlength = ws.ws_col;
-  // int wheight = ws.ws_row;
+  int wlength = ws.ws_col;
+  int wheight = ws.ws_row;
+
+  char current[wlength][wheight];
+  char next[wlength][wheight];
 
   Level level_data = {0};
 
@@ -92,15 +95,14 @@ int main(int argc, char **argv) {
 
   // Recursively initializes the player on the stack
   Player player1 = {0};
-  init_player(&player1, level_data);
+  init_player(&player1, ws, level_data);
 
-  int frame_count = 0;
-  struct timespec before;
-  clock_gettime(CLOCK_MONOTONIC, &before);
+  struct timespec prev_frame;
+  clock_gettime(CLOCK_MONOTONIC, &prev_frame);
 
   while (true) {
 
-    // print_level(&level_data, ws);
+    print_level(&level_data, ws);
 
     if (check_input() != 0) {
       char input = getchar();
@@ -122,19 +124,16 @@ int main(int argc, char **argv) {
       }
     }
 
-    render_sprite(&player1.sprite, player1.position);
-    // fflush(stdout);
-    refresh();
-    // Reset Cursor to top left and clear screen
-    printw("\033[1;1H\r");
+    render_sprite(&player1.sprite, player1.position, ws);
+    fflush(stdout);
 
-    frame_count++;
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
-    double duration = ((double)(now.tv_sec - before.tv_sec) +
-                       ((double)(now.tv_nsec - before.tv_nsec) / 1e9));
-    double fps = frame_count / duration;
-    printw("Fps: %f", fps);
+    double duration = ((double)(now.tv_sec - prev_frame.tv_sec) +
+                       ((double)(now.tv_nsec - prev_frame.tv_nsec) / 1e9));
+    double fps = 1 / duration;
+    prev_frame = now;
+    printf("Fps: %f", fps);
 
     struct timespec sleeptime;
     sleeptime.tv_sec = 0;
@@ -143,24 +142,36 @@ int main(int argc, char **argv) {
   }
 
   // Move cursor up n lines to overwrite screen
-  // printw("\033[%dA\r", wheight);
+  // printf("\033[%dA\r", wheight);
   //
   //
   // fflush(stdout);
   // sleep(1);
+  // Reset Cursor to top left and clear screen
+  printf("\033[1;1H\r");
 
-  endwin();
-  // system("stty echo");
+  system("stty echo");
 }
 
-int init_player(Player *p, Level level_data) {
+void init() {
+  system("stty -echo");
+  disable_canonical_mode();
+  printf("\033[?25l"); // hide cursor
+}
+
+void handle_exit() {
+  system("stty echo");
+  printf("\033[?25h"); // show cursor again
+}
+
+void handle_exit_signal(int sig) { handle_exit(); }
+
+int init_player(Player *p, struct winsize ws, Level level_data) {
   load_sprite_texture(&p->sprite, PLAYER_SPRITE);
 
   // Set default position for player
   Vector2 *pos = &p->position;
-  int x, y;
-  getmaxyx(stdscr, y, x);
-  pos->x = 10 + (-level_data.texture.lengthpx) / 2;
+  pos->x = 10 + (ws.ws_col - level_data.texture.lengthpx) / 2;
   pos->y = 2;
 
   return 0;
@@ -186,7 +197,7 @@ int load_sprite_texture(Sprite *sprite, char *filename) {
   sprite_file = fopen(filename, "r");
 
   if (sprite_file == NULL) {
-    printw("error opening sprite file");
+    printf("error opening sprite file");
     return 1;
   }
 
@@ -203,7 +214,7 @@ int load_sprite_texture(Sprite *sprite, char *filename) {
   char *file_buffer = malloc(size + 1);
 
   if (fread(file_buffer, 1, size, sprite_file) < size) {
-    printw("error reading file\n");
+    printf("error reading file\n");
     return 3;
   }
   file_buffer[size] = '\0';
@@ -283,7 +294,7 @@ int pad_left(int px) {
   }
 
   for (int i = 0; i < px; i++) {
-    printw(" ");
+    printf(" ");
   }
 
   return 0;
@@ -294,7 +305,7 @@ int pad_top_bottom(int px) {
     return 1;
   }
   for (int i = 0; i < px; i++) {
-    printw("\n");
+    printf("\n");
   }
 
   return 0;
@@ -305,19 +316,19 @@ int print_level(Level *level_data, struct winsize ws) {
   for (int i = 0; i < level_data->texture.heightpx; i++) {
     char *row = level_data->texture.texture[i];
     pad_left((ws.ws_col - level_data->texture.lengthpx) / 2);
-    printw("%s", row);
+    printf("%s", row);
     if ((i + 1) != level_data->texture.heightpx) {
-      printw("\n");
+      printf("\n");
     }
   }
 
   return 0;
 }
 
-int render_pixels(Vector2 pos, char *pixels) {
-  // move_cursor_to_pos(pos, ws);
-  // printw("%s", pixels);
-  mvwprintw(stdscr, pos.y, pos.x, "%s", pixels);
+int render_pixels(Vector2 pos, char *pixels, struct winsize ws) {
+  move_cursor_to_pos(pos, ws);
+  printf("%s", pixels);
+
   return 0;
 }
 
@@ -327,7 +338,7 @@ void move_cursor_to_pos(Vector2 pos, struct winsize ws) {
   // Want 0,0 to be bottom left of our map
   int x = pos.x + 1;
   int y = ws.ws_row - pos.y - 1;
-  printw("\033[%d;%dH", y, x);
+  printf("\033[%d;%dH", y, x);
 }
 
 void disable_canonical_mode() {
@@ -357,14 +368,15 @@ int check_input() {
   return FD_ISSET(STDIN_FILENO, &file_descriptor_set);
 }
 
-int render_sprite(Sprite *sprite, Vector2 pos) {
+int render_sprite(char *buffer, Sprite *sprite, Vector2 pos,
+                  struct winsize ws) {
   Vector2 temppos;
   temppos.x = pos.x;
   temppos.y = pos.y;
   char **texture = sprite->texture;
   int heightpx = sprite->heightpx;
   for (int i = heightpx - 1; i >= 0; i--) {
-    render_pixels(temppos, texture[i]);
+    render_pixels(temppos, texture[i], ws);
     temppos.y++;
   }
 
