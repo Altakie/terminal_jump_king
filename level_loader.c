@@ -1,3 +1,4 @@
+#include "./string.c"
 #include <bits/time.h>
 #include <bits/types/struct_timeval.h>
 #include <iso646.h>
@@ -7,6 +8,7 @@
 #include <stdlib.h>
 #include <sys/ioctl.h>
 #include <sys/select.h>
+#include <sys/types.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
@@ -57,19 +59,36 @@ typedef struct {
 
 struct winsize getWindowSize();
 
+typedef struct {
+  u_int cols;
+  u_int rows;
+} WinSize;
+
 void init();
 void handle_exit();
 void handle_exit_signal(int sig);
 int load_level(char *file_name, Level *level_data);
-int print_level(Level *level_data, struct winsize ws);
-int render_pixels(Vector2 pos, char *pixels, struct winsize ws);
-void move_cursor_to_pos(Vector2 pos, struct winsize ws);
+int print_level_to_buffer(TwoDCharBuffer *buffer, Level *level_data,
+                          WinSize *ws);
+int render_pixel_row(TwoDCharBuffer *buffer, Vector2 pos, char *pixels,
+                     WinSize *ws);
+void move_cursor_to_pos(u_int x, u_int y, WinSize *ws);
 void disable_canonical_mode();
 int check_input();
-int render_sprite(char *buffer, Sprite *sprite, Vector2 pos, struct winsize ws);
-int init_player(Player *p, struct winsize ws, Level level_data);
+int render_sprite(TwoDCharBuffer *buffer, Sprite *sprite, Vector2 pos,
+                  WinSize *ws);
+int init_player(Player *p, WinSize *ws, Level level_data);
 int load_sprite_texture(Sprite *sprite, char *filename);
 int max(int *arr, int len);
+void printNext(TwoDCharBuffer *currentBuffer, TwoDCharBuffer *nextBuffer);
+
+WinSize getWinSize() {
+  struct winsize ws;
+
+  WinSize res = {.cols = ws.ws_col, .rows = ws.ws_row};
+
+  return res;
+}
 
 int main(int argc, char **argv) {
   init();
@@ -78,31 +97,35 @@ int main(int argc, char **argv) {
   // Should use another thread for input handling
 
   // struct winsize ws = getWindowSize();
-  struct winsize ws;
-  if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) != 0) {
-    return 1;
-  }
+  // if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) != 0) {
+  //   return 1;
+  // }
 
-  int wlength = ws.ws_col;
-  int wheight = ws.ws_row;
+  WinSize ws = getWinSize();
 
-  char current[wlength][wheight];
-  char next[wlength][wheight];
+  TwoDCharBuffer current = newBuffer(ws.cols, ws.rows);
+  TwoDCharBuffer next = newBuffer(ws.cols, ws.rows);
+  printf("Allocated buffers");
 
   Level level_data = {0};
 
   load_level(LEVEL_FILE, &level_data);
+  printf("Loaded level");
 
   // Recursively initializes the player on the stack
   Player player1 = {0};
-  init_player(&player1, ws, level_data);
+  init_player(&player1, &ws, level_data);
 
   struct timespec prev_frame;
   clock_gettime(CLOCK_MONOTONIC, &prev_frame);
+  // print_level_to_buffer(&current, &level_data, &ws);
+  // char *offset = getPos(&current, 2, 0);
+  // // sprintf(offset, "a");
+  // printf("%s", current.buffer);
 
   while (true) {
 
-    print_level(&level_data, ws);
+    print_level_to_buffer(&next, &level_data, &ws);
 
     if (check_input() != 0) {
       char input = getchar();
@@ -124,7 +147,11 @@ int main(int argc, char **argv) {
       }
     }
 
-    render_sprite(&player1.sprite, player1.position, ws);
+    render_sprite(&next, &player1.sprite, player1.position, &ws);
+    printNext(&current, &next);
+    TwoDCharBuffer temp = current;
+    current = next;
+    next = temp;
     fflush(stdout);
 
     struct timespec now;
@@ -135,11 +162,14 @@ int main(int argc, char **argv) {
     prev_frame = now;
     printf("Fps: %f", fps);
 
-    struct timespec sleeptime;
-    sleeptime.tv_sec = 0;
-    sleeptime.tv_nsec = 5 * 1000000;
-    nanosleep(&sleeptime, &sleeptime);
+    // struct timespec sleeptime;
+    // sleeptime.tv_sec = 0;
+    // sleeptime.tv_nsec = 5 * 1000000;
+    // nanosleep(&sleeptime, &sleeptime);
   }
+
+  free(current.buffer);
+  free(next.buffer);
 
   // Move cursor up n lines to overwrite screen
   // printf("\033[%dA\r", wheight);
@@ -149,8 +179,6 @@ int main(int argc, char **argv) {
   // sleep(1);
   // Reset Cursor to top left and clear screen
   printf("\033[1;1H\r");
-
-  system("stty echo");
 }
 
 void init() {
@@ -166,12 +194,12 @@ void handle_exit() {
 
 void handle_exit_signal(int sig) { handle_exit(); }
 
-int init_player(Player *p, struct winsize ws, Level level_data) {
+int init_player(Player *p, WinSize *ws, Level level_data) {
   load_sprite_texture(&p->sprite, PLAYER_SPRITE);
 
   // Set default position for player
   Vector2 *pos = &p->position;
-  pos->x = 10 + (ws.ws_col - level_data.texture.lengthpx) / 2;
+  pos->x = 10 + (ws->cols - level_data.texture.lengthpx) / 2;
   pos->y = 2;
 
   return 0;
@@ -288,56 +316,59 @@ int load_level(char *file_name, Level *level_data) {
   return 0;
 }
 
-int pad_left(int px) {
+int pad_left(char *buffer, int px) {
   if (px < 0) {
     return 1;
   }
 
   for (int i = 0; i < px; i++) {
-    printf(" ");
+    buffer[i] = ' ';
   }
 
   return 0;
 }
 
-int pad_top_bottom(int px) {
-  if (px < 0) {
+int pad_top_bottom(TwoDCharBuffer *buffer, u_int cols, u_int rows) {
+  if (rows < 0) {
     return 1;
   }
-  for (int i = 0; i < px; i++) {
-    printf("\n");
+  for (int i = 0; i < rows; i++) {
+    char *row = getRow(buffer, i);
+    pad_left(row, cols - 2);
+    row[cols - 1] = '\n';
   }
 
   return 0;
 }
 
-int print_level(Level *level_data, struct winsize ws) {
-  pad_top_bottom(ws.ws_row - level_data->texture.heightpx);
+int print_level_to_buffer(TwoDCharBuffer *buffer, Level *level_data,
+                          WinSize *ws) {
+  pad_top_bottom(buffer, ws->rows - level_data->texture.heightpx, buffer->rows);
   for (int i = 0; i < level_data->texture.heightpx; i++) {
+    char *buffer_row = getRow(buffer, i);
     char *row = level_data->texture.texture[i];
-    pad_left((ws.ws_col - level_data->texture.lengthpx) / 2);
-    printf("%s", row);
+    pad_left(buffer_row, (ws->cols - level_data->texture.lengthpx) / 2);
+    sprintf(buffer_row, "%s", row);
     if ((i + 1) != level_data->texture.heightpx) {
-      printf("\n");
+      sprintf(buffer_row, "\n");
     }
   }
 
   return 0;
 }
 
-int render_pixels(Vector2 pos, char *pixels, struct winsize ws) {
-  move_cursor_to_pos(pos, ws);
-  printf("%s", pixels);
+int render_pixel_row(TwoDCharBuffer *buffer, Vector2 pos, char *pixels,
+                     WinSize *ws) {
+  char *offset = getPos(buffer, pos.x, pos.y);
+  sprintf(offset, "%s", pixels);
 
   return 0;
 }
 
-void move_cursor_to_pos(Vector2 pos, struct winsize ws) {
+void move_cursor_to_pos(u_int x, u_int y, WinSize *ws) {
   // Convert vector2 into screen coordinates
   // ANSI Escape codes think 1,1 is top left
   // Want 0,0 to be bottom left of our map
-  int x = pos.x + 1;
-  int y = ws.ws_row - pos.y - 1;
   printf("\033[%d;%dH", y, x);
 }
 
@@ -368,17 +399,35 @@ int check_input() {
   return FD_ISSET(STDIN_FILENO, &file_descriptor_set);
 }
 
-int render_sprite(char *buffer, Sprite *sprite, Vector2 pos,
-                  struct winsize ws) {
+int render_sprite(TwoDCharBuffer *buffer, Sprite *sprite, Vector2 pos,
+                  WinSize *ws) {
   Vector2 temppos;
   temppos.x = pos.x;
   temppos.y = pos.y;
   char **texture = sprite->texture;
   int heightpx = sprite->heightpx;
   for (int i = heightpx - 1; i >= 0; i--) {
-    render_pixels(temppos, texture[i], ws);
+    render_pixel_row(buffer, temppos, texture[i], ws);
     temppos.y++;
   }
 
   return 0;
+}
+
+void printNext(TwoDCharBuffer *currentBuffer, TwoDCharBuffer *nextBuffer) {
+  u_int rows = currentBuffer->rows;
+  u_int cols = currentBuffer->cols;
+
+  for (int y; y < rows; y++) {
+    for (int x; x < cols; x++) {
+      char currChar = getPos(currentBuffer, x, y)[0];
+      char nextChar = getPos(nextBuffer, x, y)[0];
+
+      if (currChar != nextChar) {
+        WinSize ws = {.rows = rows, .cols = cols};
+        move_cursor_to_pos(x, y, &ws);
+        printf("%c", nextChar);
+      }
+    }
+  }
 }
