@@ -66,7 +66,7 @@ int render_pixels(Vector2 pos, char *pixels, struct winsize ws);
 void move_cursor_to_pos(Vector2 pos, struct winsize ws);
 void disable_canonical_mode();
 int check_input();
-int render_sprite(char *buffer, Sprite *sprite, Vector2 pos, struct winsize ws);
+int render_sprite(Sprite *sprite, Vector2 pos, struct winsize ws);
 int init_player(Player *p, struct winsize ws, Level level_data);
 int load_sprite_texture(Sprite *sprite, char *filename);
 int max(int *arr, int len);
@@ -85,9 +85,6 @@ int main(int argc, char **argv) {
 
   int wlength = ws.ws_col;
   int wheight = ws.ws_row;
-
-  char current[wlength][wheight];
-  char next[wlength][wheight];
 
   Level level_data = {0};
 
@@ -131,6 +128,8 @@ int main(int argc, char **argv) {
     clock_gettime(CLOCK_MONOTONIC, &now);
     double duration = ((double)(now.tv_sec - prev_frame.tv_sec) +
                        ((double)(now.tv_nsec - prev_frame.tv_nsec) / 1e9));
+
+    printf("\033[1;1H\r");
     double fps = 1 / duration;
     prev_frame = now;
     printf("Fps: %f", fps);
@@ -148,7 +147,6 @@ int main(int argc, char **argv) {
   // fflush(stdout);
   // sleep(1);
   // Reset Cursor to top left and clear screen
-  printf("\033[1;1H\r");
 
   system("stty echo");
 }
@@ -368,8 +366,7 @@ int check_input() {
   return FD_ISSET(STDIN_FILENO, &file_descriptor_set);
 }
 
-int render_sprite(char *buffer, Sprite *sprite, Vector2 pos,
-                  struct winsize ws) {
+int render_sprite(Sprite *sprite, Vector2 pos, struct winsize ws) {
   Vector2 temppos;
   temppos.x = pos.x;
   temppos.y = pos.y;
