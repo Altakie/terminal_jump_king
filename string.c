@@ -67,13 +67,14 @@ void clearString(StackString *string) {
 
 void clearBuffer(TwoDCharBuffer *buffer) {
   for (int i = 0; i < buffer->cols * buffer->rows; i++) {
-    buffer->buffer[i] = 'a';
+    buffer->buffer[i] = 'o';
   }
 }
 
 TwoDCharBuffer newBuffer(u_int cols, u_int rows) {
   char *buffer = malloc(rows * cols);
-  TwoDCharBuffer res = {.buffer = (char *)buffer, .rows = rows, .cols = cols};
+  TwoDCharBuffer res = {.buffer = buffer, .rows = rows, .cols = cols};
+  clearBuffer(&res);
   return res;
 }
 
@@ -83,4 +84,15 @@ char *getRow(TwoDCharBuffer *buffer, u_int y) {
 
 char *getPos(TwoDCharBuffer *buffer, u_int x, u_int y) {
   return &buffer->buffer[buffer->cols * y + x];
+}
+
+void printToBuffer(TwoDCharBuffer *buffer, char *string, u_int x, u_int y) {
+  u_int buff_index = buffer->cols * y + x;
+  u_int string_index = 0;
+
+  while (string[string_index] != '\0') {
+    buffer->buffer[buff_index] = string[string_index];
+    string_index++;
+    buff_index++;
+  }
 }
