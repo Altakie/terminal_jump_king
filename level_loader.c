@@ -78,6 +78,8 @@ int check_input();
 int render_sprite(TwoDCharBuffer *buffer, Sprite *sprite, Vector2 pos,
                   WinSize *ws);
 int init_player(Player *p, WinSize *ws, Level level_data);
+void handle_player(Player *player, WinSize *ws);
+void add_assign_vector2(Vector2 *this, Vector2 *other);
 int load_sprite_texture(Sprite *sprite, char *filename);
 int max(int *arr, int len);
 void printNext(TwoDCharBuffer *currentBuffer, TwoDCharBuffer *nextBuffer);
@@ -85,6 +87,9 @@ void printNext(TwoDCharBuffer *currentBuffer, TwoDCharBuffer *nextBuffer);
 WinSize getWinSize() {
   struct winsize ws;
 
+  if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) != 0) {
+    exit(1);
+  }
   WinSize res = {.cols = ws.ws_col, .rows = ws.ws_row};
 
   return res;
@@ -118,10 +123,6 @@ int main(int argc, char **argv) {
 
   struct timespec prev_frame;
   clock_gettime(CLOCK_MONOTONIC, &prev_frame);
-  // print_level_to_buffer(&current, &level_data, &ws);
-  // char *offset = getPos(&current, 2, 0);
-  // // sprintf(offset, "a");
-  // printf("%s", current.buffer);
 
   while (true) {
 
@@ -136,24 +137,15 @@ int main(int argc, char **argv) {
       case 'd':
         player1.position.x += 1;
         break;
-      case 'w':
-        player1.position.y += 1;
-        break;
-      case 's':
-        player1.position.y -= 1;
-        break;
+      case ' ':
+        player1.velocity.y = 10;
       default:
         break;
       }
     }
 
+    handle_player(&player1, &ws);
     render_sprite(&next, &player1.sprite, player1.position, &ws);
-    printNext(&current, &next);
-    TwoDCharBuffer temp = current;
-    current = next;
-    next = temp;
-    fflush(stdout);
-
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     double duration = ((double)(now.tv_sec - prev_frame.tv_sec) +
@@ -162,7 +154,12 @@ int main(int argc, char **argv) {
     printf("\033[1;1H\r");
     double fps = 1 / duration;
     prev_frame = now;
-    printf("Fps: %f", fps);
+    sprintf(next.buffer, "Fps: %f", fps);
+    move_cursor_to_pos(1, 1, &ws);
+    printNext(&current, &next);
+    TwoDCharBuffer temp = current;
+    current = next;
+    next = temp;
 
     // struct timespec sleeptime;
     // sleeptime.tv_sec = 0;
@@ -196,15 +193,27 @@ void handle_exit() {
 
 void handle_exit_signal(int sig) { handle_exit(); }
 
-int init_player(Player *p, WinSize *ws, Level level_data) {
-  load_sprite_texture(&p->sprite, PLAYER_SPRITE);
+int init_player(Player *player, WinSize *ws, Level level_data) {
+  load_sprite_texture(&player->sprite, PLAYER_SPRITE);
 
   // Set default position for player
-  Vector2 *pos = &p->position;
-  pos->x = 10 + (ws->cols - level_data.texture.lengthpx) / 2;
-  pos->y = 2;
+  Vector2 *pos = &player->position;
+  pos->x = 0;
+  pos->y = 1;
+
+  player->acceleration.y = -10;
 
   return 0;
+}
+
+void handle_player(Player *player, WinSize *ws) {
+  add_assign_vector2(&player->velocity, &player->acceleration);
+  add_assign_vector2(&player->position, &player->velocity);
+}
+
+void add_assign_vector2(Vector2 *this, Vector2 *other) {
+  this->x += other->x;
+  this->y += other->y;
 }
 
 int max(int *arr, int len) {
@@ -336,8 +345,7 @@ int pad_top_bottom(TwoDCharBuffer *buffer, u_int cols, u_int rows) {
   }
   for (int i = 0; i < rows; i++) {
     char *row = getRow(buffer, i);
-    pad_left(row, cols - 2);
-    row[cols - 1] = '\n';
+    pad_left(row, cols);
   }
 
   return 0;
@@ -345,15 +353,24 @@ int pad_top_bottom(TwoDCharBuffer *buffer, u_int cols, u_int rows) {
 
 int print_level_to_buffer(TwoDCharBuffer *buffer, Level *level_data,
                           WinSize *ws) {
-  pad_top_bottom(buffer, ws->rows - level_data->texture.heightpx, buffer->rows);
+  u_int padding = ws->rows - level_data->texture.heightpx;
+  pad_top_bottom(buffer, buffer->cols, padding);
   for (int i = 0; i < level_data->texture.heightpx; i++) {
-    char *buffer_row = getRow(buffer, i);
+    u_int row_num = padding + i;
+    char *buffer_row = getRow(buffer, row_num);
     char *row = level_data->texture.texture[i];
     pad_left(buffer_row, (ws->cols - level_data->texture.lengthpx) / 2);
-    sprintf(buffer_row, "%s", row);
-    if ((i + 1) != level_data->texture.heightpx) {
-      sprintf(buffer_row, "\n");
-    }
+    printToBuffer(buffer, row, (ws->cols - level_data->texture.lengthpx) / 2,
+                  row_num);
+    pad_left(getPos(buffer,
+                    (ws->cols - level_data->texture.lengthpx) / 2 +
+                        level_data->texture.lengthpx,
+                    row_num),
+             (ws->cols - level_data->texture.lengthpx) / 2);
+    // printToBuffer(buffer, "\n", ws->cols - 1, row_num);
+    // if ((i + 1) != level_data->texture.heightpx) {
+    //   sprintf(buffer_row, "\n");
+    // }
   }
 
   return 0;
@@ -361,8 +378,7 @@ int print_level_to_buffer(TwoDCharBuffer *buffer, Level *level_data,
 
 int render_pixel_row(TwoDCharBuffer *buffer, Vector2 pos, char *pixels,
                      WinSize *ws) {
-  char *offset = getPos(buffer, pos.x, pos.y);
-  sprintf(offset, "%s", pixels);
+  printToBuffer(buffer, pixels, pos.x, pos.y);
 
   return 0;
 }
@@ -404,11 +420,16 @@ int check_input() {
 int render_sprite(TwoDCharBuffer *buffer, Sprite *sprite, Vector2 pos,
                   WinSize *ws) {
   Vector2 temppos;
-  temppos.x = pos.x;
-  temppos.y = pos.y;
+  // Sprite should be rendered with the middle of the sprite at the x value
+  temppos.x = pos.x + (ws->cols / 2 - sprite->lengthpx / 2);
+  // Sprite should be rendered with the bottom of the sprite at the y value
+  temppos.y = ws->rows - (pos.y + sprite->heightpx);
   char **texture = sprite->texture;
   int heightpx = sprite->heightpx;
-  for (int i = heightpx - 1; i >= 0; i--) {
+  if (temppos.y < 0 || (temppos.y + sprite->heightpx) > ws->rows) {
+    return 1;
+  }
+  for (int i = 0; i < heightpx; i++) {
     render_pixel_row(buffer, temppos, texture[i], ws);
     temppos.y++;
   }
@@ -420,16 +441,22 @@ void printNext(TwoDCharBuffer *currentBuffer, TwoDCharBuffer *nextBuffer) {
   u_int rows = currentBuffer->rows;
   u_int cols = currentBuffer->cols;
 
-  for (int y; y < rows; y++) {
-    for (int x; x < cols; x++) {
-      char currChar = getPos(currentBuffer, x, y)[0];
-      char nextChar = getPos(nextBuffer, x, y)[0];
+  // write(STDOUT_FILENO, nextBuffer->buffer, rows * cols);
+  fflush(stdout);
 
-      if (currChar != nextChar) {
-        WinSize ws = {.rows = rows, .cols = cols};
-        move_cursor_to_pos(x, y, &ws);
-        printf("%c", nextChar);
-      }
-    }
+  for (int y = 0; y < rows; y++) {
+    char *row = getRow(nextBuffer, y);
+    printf("\033[%d;1H", y + 1); // move to start of row y
+    write(STDOUT_FILENO, row, cols);
+    // for (int x = 0; x < cols; x++) {
+    //   char currChar = getPos(currentBuffer, x, y)[0];
+    //   char nextChar = getPos(nextBuffer, x, y)[0];
+    //
+    //   if (currChar != nextChar) {
+    //     WinSize ws = {.rows = rows, .cols = cols};
+    //     move_cursor_to_pos(x, y, &ws);
+    //     printf("%c", nextChar);
+    //   }
+    // }
   }
 }
