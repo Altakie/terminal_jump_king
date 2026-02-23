@@ -15,6 +15,12 @@
 
 #define LEVEL_FILE "level1"
 #define PLAYER_SPRITE "default.sprite"
+#define PLAYER_INITIAL_X_POS 0
+#define PLAYER_INITIAL_Y_POS 10
+#define MAX_PLAYER_VELOCITY 1
+#define GRAVITY_ACCELERATION -1
+#define PLAYER_MOVEMENT_SPEED 1
+#define PLAYER_JUMP_VELOCITY 10
 
 /* TODO
  * - Make renderer separate structure that is passed into functions
@@ -46,12 +52,13 @@ typedef struct {
 } Level;
 
 typedef struct {
-  Vector2 position;
-  Vector2 dimensions;
+  Vector2 *points;
+  u_int num_points;
 } Hitbox;
 
 typedef struct {
   Sprite sprite;
+  Hitbox hitbox;
   Vector2 position;
   Vector2 velocity;
   Vector2 acceleration;
@@ -77,11 +84,14 @@ void disable_canonical_mode();
 int check_input();
 int render_sprite(TwoDCharBuffer *buffer, Sprite *sprite, Vector2 pos,
                   WinSize *ws);
+bool is_colliding(Hitbox *hitbox1, Hitbox *hitbox2);
 int init_player(Player *p, WinSize *ws, Level level_data);
 void handle_player(Player *player, WinSize *ws);
 void add_assign_vector2(Vector2 *this, Vector2 *other);
+Vector2 new_Vector2(int x, int y);
+Vector2 add_vector2(Vector2 *first, Vector2 *second);
 int load_sprite_texture(Sprite *sprite, char *filename);
-int max(int *arr, int len);
+int max_arr(int *arr, int len);
 void printNext(TwoDCharBuffer *currentBuffer, TwoDCharBuffer *nextBuffer);
 
 WinSize getWinSize() {
@@ -132,13 +142,19 @@ int main(int argc, char **argv) {
       char input = getchar();
       switch (input) {
       case 'a':
-        player1.position.x -= 1;
+        player1.position.x -= PLAYER_MOVEMENT_SPEED;
         break;
       case 'd':
-        player1.position.x += 1;
+        player1.position.x += PLAYER_MOVEMENT_SPEED;
+        break;
+      case 's':
+        player1.position.y -= PLAYER_MOVEMENT_SPEED;
+        break;
+      case 'w':
+        player1.position.y += PLAYER_MOVEMENT_SPEED;
         break;
       case ' ':
-        player1.velocity.y = 10;
+        player1.velocity.y = PLAYER_JUMP_VELOCITY;
       default:
         break;
       }
@@ -150,11 +166,11 @@ int main(int argc, char **argv) {
     clock_gettime(CLOCK_MONOTONIC, &now);
     double duration = ((double)(now.tv_sec - prev_frame.tv_sec) +
                        ((double)(now.tv_nsec - prev_frame.tv_nsec) / 1e9));
-
-    printf("\033[1;1H\r");
     double fps = 1 / duration;
     prev_frame = now;
-    sprintf(next.buffer, "Fps: %f", fps);
+    sprintf(next.buffer, "Fps: %f Player {Pos x : %d, y %d} {Vel x: %d, y %d}",
+            fps, player1.position.x, player1.position.y, player1.velocity.x,
+            player1.velocity.y);
     move_cursor_to_pos(1, 1, &ws);
     printNext(&current, &next);
     TwoDCharBuffer temp = current;
@@ -198,10 +214,27 @@ int init_player(Player *player, WinSize *ws, Level level_data) {
 
   // Set default position for player
   Vector2 *pos = &player->position;
-  pos->x = 0;
-  pos->y = 1;
+  pos->x = PLAYER_INITIAL_X_POS;
+  pos->y = PLAYER_INITIAL_Y_POS;
 
-  player->acceleration.y = -10;
+  player->acceleration.y = GRAVITY_ACCELERATION;
+  Vector2 *points = malloc(sizeof(Vector2) * 4);
+
+  Vector2 top_left_corner =
+      new_Vector2(-(int)player->sprite.lengthpx / 2, player->sprite.heightpx);
+  points[0] = top_left_corner;
+  Vector2 top_right_corner =
+      new_Vector2((int)player->sprite.lengthpx / 2, player->sprite.heightpx);
+  points[1] = top_right_corner;
+  Vector2 bottom_right_corner =
+      new_Vector2((int)player->sprite.lengthpx / 2, 0);
+  points[2] = bottom_right_corner;
+  Vector2 bottom_left_corner =
+      new_Vector2(-(int)player->sprite.lengthpx / 2, 0);
+  points[3] = bottom_left_corner;
+
+  player->hitbox.points = points;
+  player->hitbox.num_points = 4;
 
   return 0;
 }
@@ -209,6 +242,144 @@ int init_player(Player *player, WinSize *ws, Level level_data) {
 void handle_player(Player *player, WinSize *ws) {
   add_assign_vector2(&player->velocity, &player->acceleration);
   add_assign_vector2(&player->position, &player->velocity);
+  if (player->velocity.x > MAX_PLAYER_VELOCITY) {
+    player->velocity.x = MAX_PLAYER_VELOCITY;
+  }
+
+  if (player->velocity.x < -MAX_PLAYER_VELOCITY) {
+    player->velocity.x = -MAX_PLAYER_VELOCITY;
+  }
+
+  if (player->velocity.y > MAX_PLAYER_VELOCITY) {
+    player->velocity.y = MAX_PLAYER_VELOCITY;
+  }
+
+  if (player->velocity.y < -MAX_PLAYER_VELOCITY) {
+    player->velocity.y = -MAX_PLAYER_VELOCITY;
+  }
+
+  Vector2 floor_points[2];
+  floor_points[0] = new_Vector2(-(int)ws->cols / 2, 0);
+  floor_points[1] = new_Vector2(ws->cols / 2, 0);
+  Hitbox floor_hitbox = {
+      .points = floor_points,
+      .num_points = 2,
+  };
+
+  Vector2 player_points[4];
+  for (int i = 0; i < player->hitbox.num_points; i++) {
+    player_points[i] =
+        add_vector2(&player->position, &player->hitbox.points[i]);
+  }
+
+  Hitbox player_hitbox = {.num_points = 4, .points = player_points};
+
+  if (is_colliding(&floor_hitbox, &player_hitbox)) {
+    // printf("Colliding \n");
+    player->position.y = PLAYER_INITIAL_Y_POS;
+  }
+}
+
+int min(int a, int b) {
+  if (a < b) {
+    return a;
+  } else {
+    return b;
+  }
+}
+
+int max(int a, int b) {
+  if (a > b) {
+    return a;
+  } else {
+    return b;
+  }
+}
+
+bool is_colliding_vertical_and_horizontal(Vector2 *vertical1,
+                                          Vector2 *vertical2, Vector2 *other1,
+                                          Vector2 *other2) {
+  if (vertical1->x < min(other1->x, other2->x) ||
+      vertical1->x > max(other1->x, other2->x)) {
+    return false;
+  }
+  if (min(vertical1->y, vertical2->y) > max(other1->y, other2->y) ||
+      max(other1->y, other2->y) < min(vertical1->y, vertical2->y)) {
+    return false;
+  }
+  return true;
+}
+
+bool is_colliding(Hitbox *hitbox1, Hitbox *hitbox2) {
+  for (int i = 0; i < hitbox1->num_points; i++) {
+    Vector2 *point1 = &hitbox1->points[i];
+    Vector2 *point2 = &hitbox1->points[(i + 1) % hitbox1->num_points];
+
+    for (int j = 0; j < hitbox2->num_points; j++) {
+      Vector2 *point3 = &hitbox2->points[j];
+      Vector2 *point4 = &hitbox2->points[(j + 1) % hitbox2->num_points];
+      if (max(point1->x, point2->x) < min(point3->x, point4->x) ||
+          max(point3->x, point4->x) < min(point1->x, point2->x)) {
+        continue;
+      }
+
+      if ((point2->x - point1->x) == 0 || (point4->x - point3->x) == 0) {
+        // Two cases: Both lines are vertical -> check if they have the same x
+        // One of the lines is vertical -> check if the vertical line intersects
+        // the non-vertical line The vertical line just has one x and a y range
+        // If the x is between the x's of the non-vertical line and the y ranges
+        // overlap, these lines must be intersecting
+        bool vertical1 = (point2->x - point1->y) == 0;
+        bool vertical2 = (point4->x - point3->y) == 0;
+        if (vertical1 && vertical2 && point1->x == point3->x) {
+          // printf("Vertical ");
+          return true;
+        }
+
+        if (vertical1) {
+          if (!is_colliding_vertical_and_horizontal(point1, point2, point3,
+                                                    point4)) {
+            continue;
+          }
+        } else {
+          if (!is_colliding_vertical_and_horizontal(point3, point4, point1,
+                                                    point2)) {
+            continue;
+          }
+        }
+
+        // printf("Vertical ");
+        return true;
+      }
+
+      int slope1 = (point2->y - point1->y) / (point2->x - point1->x);
+      int y_intercept1 = point2->y - slope1 * point2->x;
+
+      int slope2 = (point4->y - point3->y) / (point4->x - point3->x);
+      int y_intercept2 = point4->y - slope2 * point4->x;
+
+      if (slope1 == slope2) {
+        if (y_intercept1 == y_intercept2) {
+          printf("Overlap ");
+          return true;
+        }
+        continue;
+      }
+
+      int x = (y_intercept1 - y_intercept2) / (slope2 - slope1);
+      int min_x = max(min(point1->x, point2->x), min(point3->x, point4->x));
+      int max_x = min(max(point1->x, point2->x), max(point3->x, point4->x));
+
+      if (x < min_x || x > max_x) {
+        continue;
+      } else {
+        printf("Single Point ");
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 void add_assign_vector2(Vector2 *this, Vector2 *other) {
@@ -216,7 +387,26 @@ void add_assign_vector2(Vector2 *this, Vector2 *other) {
   this->y += other->y;
 }
 
-int max(int *arr, int len) {
+Vector2 new_Vector2(int x, int y) {
+  Vector2 res = {.x = x, .y = y};
+  return res;
+}
+
+Vector2 add_vector2(Vector2 *first, Vector2 *second) {
+  Vector2 res = new_Vector2(first->x + second->x, first->y + second->y);
+  return res;
+}
+
+Hitbox new_Hitbox(Vector2 *points, u_int num_points) {
+  Hitbox res = {
+      .points = points,
+      .num_points = num_points,
+  };
+
+  return res;
+}
+
+int max_arr(int *arr, int len) {
   if (len == 0) {
     return 0;
   }
@@ -285,7 +475,7 @@ int load_sprite_texture(Sprite *sprite, char *filename) {
   }
 
   // Only really want largest line length
-  int max_line_length = max(line_lengths, line_count);
+  int max_line_length = max_arr(line_lengths, line_count);
 
   // Format sprite into 2D array
   char **texture = malloc(sizeof(char *) * line_count);
@@ -419,11 +609,11 @@ int check_input() {
 
 int render_sprite(TwoDCharBuffer *buffer, Sprite *sprite, Vector2 pos,
                   WinSize *ws) {
-  Vector2 temppos;
   // Sprite should be rendered with the middle of the sprite at the x value
-  temppos.x = pos.x + (ws->cols / 2 - sprite->lengthpx / 2);
   // Sprite should be rendered with the bottom of the sprite at the y value
-  temppos.y = ws->rows - (pos.y + sprite->heightpx);
+  Vector2 temppos =
+      new_Vector2(pos.x + (ws->cols / 2 - sprite->lengthpx / 2),
+                  temppos.y = ws->rows - (pos.y + sprite->heightpx));
   char **texture = sprite->texture;
   int heightpx = sprite->heightpx;
   if (temppos.y < 0 || (temppos.y + sprite->heightpx) > ws->rows) {
