@@ -1,7 +1,7 @@
 #include "./string.c"
 #include <bits/time.h>
 #include <bits/types/struct_timeval.h>
-#include <iso646.h>
+#include <math.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -16,9 +16,9 @@
 #define LEVEL_FILE "level1"
 #define PLAYER_SPRITE "default.sprite"
 #define PLAYER_INITIAL_X_POS 0
-#define PLAYER_INITIAL_Y_POS 10
+#define PLAYER_INITIAL_Y_POS 5
 #define MAX_PLAYER_VELOCITY 1
-#define GRAVITY_ACCELERATION -1
+#define GRAVITY_ACCELERATION 0
 #define PLAYER_MOVEMENT_SPEED 1
 #define PLAYER_JUMP_VELOCITY 10
 
@@ -75,18 +75,22 @@ void init();
 void handle_exit();
 void handle_exit_signal(int sig);
 int load_level(char *file_name, Level *level_data);
-int print_level_to_buffer(TwoDCharBuffer *buffer, Level *level_data,
-                          WinSize *ws);
+int draw_level_to_buffer(TwoDCharBuffer *buffer, Level *level_data,
+                         WinSize *ws);
 int render_pixel_row(TwoDCharBuffer *buffer, Vector2 pos, char *pixels,
                      WinSize *ws);
 void move_cursor_to_pos(u_int x, u_int y, WinSize *ws);
 void disable_canonical_mode();
 int check_input();
-int render_sprite(TwoDCharBuffer *buffer, Sprite *sprite, Vector2 pos,
-                  WinSize *ws);
+Vector2 convert_world_pos_to_screen_pos(Vector2 *pos, WinSize *ws);
+int draw_sprite_to_buffer(TwoDCharBuffer *buffer, Sprite *sprite, Vector2 pos,
+                          WinSize *ws);
+void draw_hitbox_to_buffer(TwoDCharBuffer *buffer, Hitbox *hitbox, WinSize *ws);
+void draw_line_to_buffer(TwoDCharBuffer *buffer, Vector2 *point1,
+                         Vector2 *point2, WinSize *ws);
 bool is_colliding(Hitbox *hitbox1, Hitbox *hitbox2);
 int init_player(Player *p, WinSize *ws, Level level_data);
-void handle_player(Player *player, WinSize *ws);
+void handle_player(Player *player, TwoDCharBuffer *buffer, WinSize *ws);
 void add_assign_vector2(Vector2 *this, Vector2 *other);
 Vector2 new_Vector2(int x, int y);
 Vector2 add_vector2(Vector2 *first, Vector2 *second);
@@ -136,7 +140,7 @@ int main(int argc, char **argv) {
 
   while (true) {
 
-    print_level_to_buffer(&next, &level_data, &ws);
+    draw_level_to_buffer(&next, &level_data, &ws);
 
     if (check_input() != 0) {
       char input = getchar();
@@ -160,8 +164,8 @@ int main(int argc, char **argv) {
       }
     }
 
-    handle_player(&player1, &ws);
-    render_sprite(&next, &player1.sprite, player1.position, &ws);
+    handle_player(&player1, &next, &ws);
+    draw_sprite_to_buffer(&next, &player1.sprite, player1.position, &ws);
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     double duration = ((double)(now.tv_sec - prev_frame.tv_sec) +
@@ -220,11 +224,26 @@ int init_player(Player *player, WinSize *ws, Level level_data) {
   player->acceleration.y = GRAVITY_ACCELERATION;
   Vector2 *points = malloc(sizeof(Vector2) * 4);
 
-  Vector2 top_left_corner =
-      new_Vector2(-(int)player->sprite.lengthpx / 2, player->sprite.heightpx);
+  // Vector2 top_left_corner = new_Vector2(-(int)player->sprite.lengthpx / 2 -
+  // 1,
+  //                                       player->sprite.heightpx + 1);
+  // points[0] = top_left_corner;
+  // Vector2 top_right_corner = new_Vector2((int)player->sprite.lengthpx / 2 +
+  // 1,
+  //                                        player->sprite.heightpx + 1);
+  // points[1] = top_right_corner;
+  // Vector2 bottom_right_corner =
+  //     new_Vector2((int)player->sprite.lengthpx / 2 + 1, -1);
+  // points[2] = bottom_right_corner;
+  // Vector2 bottom_left_corner =
+  //     new_Vector2(-(int)player->sprite.lengthpx / 2 - 1, -1);
+  // points[3] = bottom_left_corner;
+
+  Vector2 top_left_corner = new_Vector2(-(int)player->sprite.lengthpx / 2,
+                                        player->sprite.heightpx - 1);
   points[0] = top_left_corner;
-  Vector2 top_right_corner =
-      new_Vector2((int)player->sprite.lengthpx / 2, player->sprite.heightpx);
+  Vector2 top_right_corner = new_Vector2((int)player->sprite.lengthpx / 2,
+                                         player->sprite.heightpx - 1);
   points[1] = top_right_corner;
   Vector2 bottom_right_corner =
       new_Vector2((int)player->sprite.lengthpx / 2, 0);
@@ -239,7 +258,7 @@ int init_player(Player *player, WinSize *ws, Level level_data) {
   return 0;
 }
 
-void handle_player(Player *player, WinSize *ws) {
+void handle_player(Player *player, TwoDCharBuffer *buffer, WinSize *ws) {
   add_assign_vector2(&player->velocity, &player->acceleration);
   add_assign_vector2(&player->position, &player->velocity);
   if (player->velocity.x > MAX_PLAYER_VELOCITY) {
@@ -266,6 +285,22 @@ void handle_player(Player *player, WinSize *ws) {
       .num_points = 2,
   };
 
+  Vector2 ceiling_points[2];
+  ceiling_points[0] = new_Vector2(-(int)ws->cols / 2, 20);
+  ceiling_points[1] = new_Vector2(ws->cols / 2, 20);
+  Hitbox ceiling_hitbox = {
+      .points = ceiling_points,
+      .num_points = 2,
+  };
+
+  Vector2 left_wall_points[2];
+  left_wall_points[0] = new_Vector2(-10, 0);
+  left_wall_points[1] = new_Vector2(-10, ws->rows - 1);
+  Hitbox left_wall = {
+      .points = left_wall_points,
+      .num_points = 2,
+  };
+
   Vector2 player_points[4];
   for (int i = 0; i < player->hitbox.num_points; i++) {
     player_points[i] =
@@ -273,10 +308,27 @@ void handle_player(Player *player, WinSize *ws) {
   }
 
   Hitbox player_hitbox = {.num_points = 4, .points = player_points};
+  // draw_hitbox_to_buffer(buffer, &player_hitbox, ws);
+  // draw_hitbox_to_buffer(buffer, &floor_hitbox, ws);
+  // draw_hitbox_to_buffer(buffer, &ceiling_hitbox, ws);
+  // draw_hitbox_to_buffer(buffer, &left_wall, ws);
 
   if (is_colliding(&floor_hitbox, &player_hitbox)) {
-    // printf("Colliding \n");
-    player->position.y = PLAYER_INITIAL_Y_POS;
+    printf("Colliding \n");
+    // player->velocity.y = 0;
+    player->position.y = 1;
+  }
+
+  if (is_colliding(&ceiling_hitbox, &player_hitbox)) {
+    printf("Colliding \n");
+    // player->velocity.y = 0;
+    player->position.y = 20 - player->sprite.heightpx;
+  }
+
+  if (is_colliding(&left_wall, &player_hitbox)) {
+    printf("Colliding \n");
+    // player->velocity.y = 0;
+    player->position.x = -8;
   }
 }
 
@@ -296,6 +348,15 @@ int max(int a, int b) {
   }
 }
 
+void draw_hitbox_to_buffer(TwoDCharBuffer *buffer, Hitbox *hitbox,
+                           WinSize *ws) {
+  for (int i = 0; i < hitbox->num_points; i++) {
+    Vector2 *point1 = &hitbox->points[i];
+    Vector2 *point2 = &hitbox->points[(i + 1) % hitbox->num_points];
+    draw_line_to_buffer(buffer, point1, point2, ws);
+  }
+}
+
 bool is_colliding_vertical_and_horizontal(Vector2 *vertical1,
                                           Vector2 *vertical2, Vector2 *other1,
                                           Vector2 *other2) {
@@ -304,10 +365,51 @@ bool is_colliding_vertical_and_horizontal(Vector2 *vertical1,
     return false;
   }
   if (min(vertical1->y, vertical2->y) > max(other1->y, other2->y) ||
-      max(other1->y, other2->y) < min(vertical1->y, vertical2->y)) {
+      max(vertical1->y, vertical2->y) < min(other1->y, other2->y)) {
     return false;
   }
   return true;
+}
+
+void draw_line_to_buffer(TwoDCharBuffer *buffer, Vector2 *point1,
+                         Vector2 *point2, WinSize *ws) {
+  int distance = (int)ceil(sqrt(pow((double)(point2->y - point1->y), 2.0) +
+                                pow((point2->x - point1->x), 2.0)));
+
+  Vector2 screen_point1 = convert_world_pos_to_screen_pos(point1, ws);
+  Vector2 screen_point2 = convert_world_pos_to_screen_pos(point2, ws);
+  if (screen_point2.x - screen_point1.x == 0) {
+    if (screen_point1.y > screen_point2.y) {
+      Vector2 temp = screen_point1;
+      screen_point1 = screen_point2;
+      screen_point2 = temp;
+    }
+    for (int i = 0; i <= distance; i++) {
+      // Calc where to draw point
+      Vector2 new_point = new_Vector2(screen_point1.x, screen_point1.y + i);
+      // Draw point there
+      printToBuffer(buffer, "*", new_point.x, new_point.y);
+    }
+    return;
+  }
+
+  if (screen_point1.x > screen_point2.x) {
+    Vector2 temp = screen_point1;
+    screen_point1 = screen_point2;
+    screen_point2 = temp;
+  }
+
+  int slope =
+      (screen_point2.y - screen_point1.y) / (screen_point2.x - screen_point1.x);
+  int y_intercept = screen_point2.y - slope * screen_point2.x;
+
+  for (int i = 0; i < distance; i++) {
+    // Calc where to draw screen_point
+    int new_x = screen_point1.x + i;
+    Vector2 new_point = new_Vector2(new_x, slope * new_x + y_intercept);
+    // Draw screen_point there
+    printToBuffer(buffer, "*", new_point.x, new_point.y);
+  }
 }
 
 bool is_colliding(Hitbox *hitbox1, Hitbox *hitbox2) {
@@ -332,7 +434,7 @@ bool is_colliding(Hitbox *hitbox1, Hitbox *hitbox2) {
         bool vertical1 = (point2->x - point1->y) == 0;
         bool vertical2 = (point4->x - point3->y) == 0;
         if (vertical1 && vertical2 && point1->x == point3->x) {
-          // printf("Vertical ");
+          printf("Vertical ");
           return true;
         }
 
@@ -348,7 +450,7 @@ bool is_colliding(Hitbox *hitbox1, Hitbox *hitbox2) {
           }
         }
 
-        // printf("Vertical ");
+        printf("Vertical ");
         return true;
       }
 
@@ -541,8 +643,8 @@ int pad_top_bottom(TwoDCharBuffer *buffer, u_int cols, u_int rows) {
   return 0;
 }
 
-int print_level_to_buffer(TwoDCharBuffer *buffer, Level *level_data,
-                          WinSize *ws) {
+int draw_level_to_buffer(TwoDCharBuffer *buffer, Level *level_data,
+                         WinSize *ws) {
   u_int padding = ws->rows - level_data->texture.heightpx;
   pad_top_bottom(buffer, buffer->cols, padding);
   for (int i = 0; i < level_data->texture.heightpx; i++) {
@@ -607,13 +709,12 @@ int check_input() {
   return FD_ISSET(STDIN_FILENO, &file_descriptor_set);
 }
 
-int render_sprite(TwoDCharBuffer *buffer, Sprite *sprite, Vector2 pos,
-                  WinSize *ws) {
+int draw_sprite_to_buffer(TwoDCharBuffer *buffer, Sprite *sprite, Vector2 pos,
+                          WinSize *ws) {
   // Sprite should be rendered with the middle of the sprite at the x value
   // Sprite should be rendered with the bottom of the sprite at the y value
-  Vector2 temppos =
-      new_Vector2(pos.x + (ws->cols / 2 - sprite->lengthpx / 2),
-                  temppos.y = ws->rows - (pos.y + sprite->heightpx));
+  Vector2 temppos = new_Vector2(pos.x + (ws->cols / 2 - sprite->lengthpx / 2),
+                                ws->rows - (pos.y + sprite->heightpx));
   char **texture = sprite->texture;
   int heightpx = sprite->heightpx;
   if (temppos.y < 0 || (temppos.y + sprite->heightpx) > ws->rows) {
@@ -625,6 +726,11 @@ int render_sprite(TwoDCharBuffer *buffer, Sprite *sprite, Vector2 pos,
   }
 
   return 0;
+}
+
+Vector2 convert_world_pos_to_screen_pos(Vector2 *pos, WinSize *ws) {
+  Vector2 temppos = new_Vector2(pos->x + ws->cols / 2, ws->rows - pos->y - 1);
+  return temppos;
 }
 
 void printNext(TwoDCharBuffer *currentBuffer, TwoDCharBuffer *nextBuffer) {
